@@ -1,0 +1,94 @@
+#!/bin/bash
+
+export PATH=/usr/local/bin:$PATH
+
+function get_video_directories() {
+    find ./* -type d -prune | egrep '^\./[0-9]{4}(-[0-9]{2}){2}$' | sort -r
+}
+
+function get_nth_video_directory() {
+    get_video_directories | sed "${1}q;d" | cut -c3-
+}
+
+function generate_segments_list_for_current_directory() {
+    ls $PWD/ | egrep '^video_[0-9]{6}\.ts$' | awk "{ print \"file '\" \$1 \"'\" }"
+}
+
+function run_conversion_in_directory() {
+    local result
+
+    pushd $1 &>/dev/null
+    mkdir lock &>/dev/null
+
+    generate_segments_list_for_current_directory > segments.txt
+
+    nice -n 10 ffmpeg -y -hide_banner -f concat -safe 1 -i segments.txt \
+        -c:v libx265 -forced-idr 1 -f mp4 video.mp4.tmp >> ../logs/ffmpeg-${1}.txt 2>&1
+
+    result=$?
+
+    if [ $result -eq 0 ] && [ -r "video.mp4.tmp" ]; then
+        mv -f "video.mp4.tmp" "video.mp4"
+
+        if [ $? -eq 0 ]; then
+            sha512sum "video.mp4" > "video.mp4.sha512sum"
+
+            if [ $? -eq 0 ]; then
+                find . -name 'video_\*.ts' -delete
+            else
+                result=$?
+            fi
+        else
+            result=$?
+        fi
+    fi
+
+    if [ $result -ne 0 ]; then
+        rm -f "video.mp4.tmp" &>/dev/null
+    fi
+
+    rm -rf lock &>/dev/null
+    popd &>/dev/null
+
+    return $result
+}
+
+function can_run_conversion_in_directory() {
+    if [ -f "${1}/video.mp4" ]; then
+        return 1
+    fi
+
+    if [ -d "${1}/lock" ]; then
+        return 2
+    fi
+
+    return 0
+}
+
+trap ':' INT TERM QUIT
+
+while NEW_DIR=$(inotifywait -e create $PWD --format %f . 2>/dev/null); do
+    if [[ $NEW_DIR =~ ^[1-9][0-9]{3}-(0[1-9]|1[0-9])-(0[1-9]|[1-3][0-9])$ ]]; then
+        TARGET_DIR=$(get_nth_video_directory 3)
+
+        if [ "${TARGET_DIR}" == "" ]; then
+            echo "There is no directory to convert"
+        fi
+
+        if [ -d "${TARGET_DIR}" ]; then
+            can_run_conversion_in_directory $TARGET_DIR
+
+            if [ $? -eq 0 ]; then
+                echo "Starting converting segment files in ${TARGET_DIR}..."
+
+                run_conversion_in_directory $TARGET_DIR
+
+                if [ $? -eq 0 ]; then
+                    echo "Done converting segments into one file"
+                else
+                    echo "Error while converting segments into one file"
+                fi
+            fi
+        fi
+    fi
+done

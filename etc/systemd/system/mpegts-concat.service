@@ -1,0 +1,16 @@
+[Unit]
+Description=MPEG-TS Segments concat service
+After=network.target
+
+[Service]
+User=nginx
+Group=nginx
+WorkingDirectory=/var/www/webroot
+ExecStart=/usr/local/bin/mpegts-concat
+Restart=always
+StandardOutput=syslog
+StandardError=syslog
+SyslogIdentifier=mpegts-concat
+
+[Install]
+WantedBy=multi-user.target
